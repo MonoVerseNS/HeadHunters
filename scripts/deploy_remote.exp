@@ -1,0 +1,82 @@
+#!/usr/bin/expect -f
+
+set timeout 60
+set password [lindex $argv 0]
+set remote_host "95.182.97.163"
+set remote_user "root"
+set remote_path "/var/www/headhunter"
+
+if {$password == ""} {
+    puts "Usage: ./deploy_remote.exp <password>"
+    exit 1
+}
+
+puts "=== HeadHunters Remote Deployment (Expect) ==="
+
+# 1. Sync Server Code
+puts "Syncing server code to $remote_host..."
+# Create data dir on remote
+spawn ssh -o StrictHostKeyChecking=no $remote_user@$remote_host "mkdir -p $remote_path/server/data"
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+# Sync files
+spawn scp -o StrictHostKeyChecking=no server/server.js server/db.js server/nftService.js server/backupService.js $remote_user@$remote_host:$remote_path/server/
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+# Sync frontend (dist)
+puts "Syncing frontend dist to $remote_host..."
+spawn scp -o StrictHostKeyChecking=no -r dist $remote_user@$remote_host:$remote_path/
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+# Sync public assets
+puts "Syncing public assets to $remote_host..."
+spawn scp -o StrictHostKeyChecking=no -r public $remote_user@$remote_host:$remote_path/
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+# 2. Sync Data (env.json and DB)
+puts "Syncing data to $remote_host..."
+spawn scp -o StrictHostKeyChecking=no server/data/env.json server/data/headhunter.db $remote_user@$remote_host:$remote_path/server/data/
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+# 3. Restart Service
+puts "Restarting service on remote..."
+spawn ssh -o StrictHostKeyChecking=no $remote_user@$remote_host "cd $remote_path/server && pm2 restart server.js || pm2 start server.js"
+expect {
+    "*?assword:*" {
+        send "$password\r"
+        exp_continue
+    }
+    eof
+}
+
+puts "=== Deployment Complete ==="
