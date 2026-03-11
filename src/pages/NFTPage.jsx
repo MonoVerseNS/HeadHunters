@@ -242,7 +242,7 @@ export default function NFTPage() {
     const [searchParams] = useSearchParams()
     const searchTerm = searchParams.get('search') || ''
 
-    const { user, isAdmin, collections } = useAuth()
+    const { user, isAdmin, collections, socket } = useAuth()
     const {
         placeBid, buyNowAuction, claimAuctionNFT, cancelAuction, refundBid, topUpBid,
         balance, addNotification, markNotificationRead, clearNotifications, notifications, allNFTs
@@ -260,53 +260,91 @@ export default function NFTPage() {
     const [detailNft, setDetailNft] = useState(null)
     const [priceMax, setPriceMax] = useState('')
 
+    const mapAuction = useCallback((a) => ({
+        id: a.id,
+        nftId: a.nft_id || a.nftId,
+        name: a.name,
+        image: a.image,
+        emoji: a.emoji,
+        isGif: !!a.is_gif || !!a.isGif,
+        collectionName: a.collection_name || a.collectionName,
+        color: a.color,
+        creatorId: a.creator_id || a.creatorId,
+        creatorName: a.creator_username || a.creator_first_name || a.creatorName || 'Аноним',
+        startPrice: a.start_price || a.startPrice,
+        currentBid: a.current_bid || a.currentBid,
+        currentBidderId: a.current_bidder_id || a.currentBidderId,
+        currentBidderName: a.bidder_username || a.bidder_first_name || a.currentBidderName || 'Аноним',
+        bidStep: a.bid_step || a.bidStep || 1,
+        buyNowPrice: a.buy_now_price || a.buyNowPrice,
+        isDirectSale: !!a.is_direct_sale || !!a.isDirectSale,
+        endsAt: a.ends_at || a.endsAt,
+        status: a.status,
+        onChainIndex: a.on_chain_index || a.onChainIndex,
+        upgrade: a.upgrade ? (typeof a.upgrade === 'string' ? JSON.parse(a.upgrade) : a.upgrade) : null,
+        bids: (a.bids || []).map(b => ({
+            userId: b.user_id || b.userId,
+            username: b.username || b.first_name || b.username || 'Аноним',
+            amount: b.amount,
+            at: new Date(b.created_at || b.at).getTime(),
+        })),
+    }), [])
+
     const loadAuctions = useCallback(async () => {
         try {
             const res = await fetch('/api/auctions')
             if (res.ok) {
                 const data = await res.json()
-                // Map snake_case DB fields to camelCase for the frontend
-                const mapped = data.map(a => ({
-                    id: a.id,
-                    nftId: a.nft_id,
-                    name: a.name,
-                    image: a.image,
-                    emoji: a.emoji,
-                    isGif: !!a.is_gif,
-                    collectionName: a.collection_name,
-                    color: a.color,
-                    creatorId: a.creator_id,
-                    creatorName: a.creator_username || a.creator_first_name || 'Аноним',
-                    startPrice: a.start_price,
-                    currentBid: a.current_bid,
-                    currentBidderId: a.current_bidder_id,
-                    currentBidderName: a.bidder_username || a.bidder_first_name || 'Аноним',
-                    bidStep: a.bid_step || 1,
-                    buyNowPrice: a.buy_now_price,
-                    isDirectSale: !!a.is_direct_sale,
-                    endsAt: a.ends_at,
-                    status: a.status,
-                    onChainIndex: a.on_chain_index,
-                    upgrade: a.upgrade ? JSON.parse(a.upgrade) : null,
-                    bids: (a.bids || []).map(b => ({
-                        userId: b.user_id,
-                        username: b.username || b.first_name || 'Аноним',
-                        amount: b.amount,
-                        at: new Date(b.created_at).getTime(),
-                    })),
-                }))
-                setAuctions(mapped)
+                setAuctions(data.map(mapAuction))
             }
         } catch (e) {
             console.error('[NFT] Load auctions error:', e)
         }
-    }, [])
+    }, [mapAuction])
 
     useEffect(() => {
         loadAuctions()
-        const interval = setInterval(loadAuctions, CONFIG.intervals.auctionPoll)
-        return () => clearInterval(interval)
+        // No more polling! Using WebSockets below
     }, [loadAuctions])
+
+    // ── WebSocket Real-time Updates ──
+    useEffect(() => {
+        if (!socket) return
+
+        const handleNewBid = (data) => {
+            console.log('[WS] Real-time bid received:', data)
+            setAuctions(prev => prev.map(a => 
+                a.id === data.auctionId 
+                ? { ...a, currentBid: data.currentBid, currentBidderId: data.currentBidderId } 
+                : a
+            ))
+            // Also update bid modal if it's open for this auction
+            setBidModal(prev => (prev && prev.id === data.auctionId) 
+                ? { ...prev, currentBid: data.currentBid, minBid: data.currentBid + (prev.bidStep || BID_STEP) } 
+                : prev
+            )
+        }
+
+        const handleAuctionClosed = (data) => {
+            console.log('[WS] Auction closed:', data)
+            setAuctions(prev => prev.filter(a => a.id !== data.auctionId))
+            if (bidModal?.id === data.auctionId) {
+                setBidModal(null)
+                addToast('Этот аукцион только что завершился', 'info')
+            }
+        }
+
+        socket.on('new_bid', handleNewBid)
+        socket.on('auction_closed', handleAuctionClosed)
+
+        // Join all active auction rooms
+        auctions.forEach(a => socket.emit('join_auction', a.id))
+
+        return () => {
+            socket.off('new_bid', handleNewBid)
+            socket.off('auction_closed', handleAuctionClosed)
+        }
+    }, [socket, auctions.length, bidModal?.id, addToast])
 
     const openBidModal = (auction) => {
         if (!user) { addToast('Войдите, чтобы делать ставки', 'error'); return }
@@ -503,14 +541,19 @@ export default function NFTPage() {
 
     return (
         <div className="fade-in">
-            <div className="page-header" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="page-header" style={{ 
+                flexDirection: window.innerWidth < 640 ? 'column' : 'row', 
+                alignItems: window.innerWidth < 640 ? 'flex-start' : 'center', 
+                justifyContent: 'space-between',
+                gap: '12px'
+            }}>
                 <div>
                     <h1 className="page-title">NFT <span className="gradient-text">Market</span></h1>
                     <p className="page-subtitle">
                         {searchTerm ? `Результаты поиска: "${searchTerm}"` : 'Прямые продажи и аукционы'}
                     </p>
                 </div>
-                <button className="btn btn-primary" onClick={() => navigate('/nft/create')}>
+                <button className="btn btn-primary" onClick={() => navigate('/nft/create')} style={{ width: window.innerWidth < 640 ? '100%' : 'auto' }}>
                     <FiPlus /> Создать
                 </button>
             </div>

@@ -120,7 +120,9 @@ export default function LeaderboardPage() {
                     {/* Top 3 Podium */}
                     {currentRanking.length >= 3 && activeTab === 'balance' && (
                         <div style={{
-                            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px',
+                            display: 'grid', 
+                            gridTemplateColumns: window.innerWidth < 480 ? '1fr' : '1fr 1fr 1fr', 
+                            gap: '12px',
                             marginBottom: 'var(--space-xl)',
                         }}>
                             {[1, 0, 2].map(idx => {

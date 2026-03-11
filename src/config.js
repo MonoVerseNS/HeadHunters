@@ -5,7 +5,6 @@
 // ── Data imports (colors, patterns stored in JSON for easy editing) ──
 import colorsData from './data/colors.json'
 import patternsData from './data/patterns.json'
-import envConfig from '../server/data/env.json'
 
 // ── Unique ID Generator ──
 // Produces IDs like: nft_3f8a1b2c_1707912345678
@@ -35,26 +34,19 @@ export function saveSettings(settings) {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
     // Update CONFIG in-place so all imports reflect changes
     Object.assign(CONFIG.telegram, {
-        botId: settings.botUsername || envConfig.telegram?.botUsername || 'HeadHuntersBot',
-        botToken: settings.botToken || envConfig.telegram?.botToken || '',
-        webhookUrl: settings.webhookUrl || envConfig.telegram?.webhookUrl || '',
-        adminChatId: settings.adminChatId || envConfig.telegram?.adminChatId || '',
-    })
-    Object.assign(CONFIG.auth, {
-        jwtSecret: settings.jwtSecret || envConfig.backend?.jwtSecret || '',
-        adminApiKey: settings.adminApiKey || envConfig.backend?.adminApiKey || '',
+        botId: settings.botUsername || 'HeadHuntersBot',
     })
     Object.assign(CONFIG.domain, {
-        url: settings.domain || envConfig.app?.domain || '',
-        appUrl: settings.appUrl || envConfig.app?.url || 'http://localhost:3310',
-        corsOrigins: settings.corsOrigins || envConfig.backend?.corsOrigins || [],
+        url: settings.domain || '',
+        appUrl: settings.appUrl || 'http://localhost:3310',
+        corsOrigins: settings.corsOrigins || [],
     })
 }
 
-// Helper: get value from runtime settings, then env.json, then default
-function rv(settingsKey, envValue, fallback = '') {
+// Helper: get value from runtime settings, then default
+function rv(settingsKey, fallback = '') {
     const s = getSettings()
-    return s[settingsKey] || envValue || fallback
+    return s[settingsKey] || fallback
 }
 
 // ============================================
@@ -64,26 +56,20 @@ function rv(settingsKey, envValue, fallback = '') {
 export const CONFIG = {
     // ── Telegram Auth ──
     telegram: {
-        botId: rv('botUsername', envConfig.telegram?.botUsername, 'HeadHuntersBot'),
-        botToken: rv('botToken', envConfig.telegram?.botToken),
-        apiId: envConfig.telegram?.apiId || '',
-        apiHash: envConfig.telegram?.apiHash || '',
-        webhookUrl: rv('webhookUrl', envConfig.telegram?.webhookUrl),
-        adminChatId: rv('adminChatId', envConfig.telegram?.adminChatId),
+        botId: rv('botUsername', 'HeadHuntersBot'),
         authCallbackName: 'onTelegramAuth',
     },
 
     // ── Auth / Security ──
     auth: {
-        jwtSecret: rv('jwtSecret', envConfig.backend?.jwtSecret),
-        adminApiKey: rv('adminApiKey', envConfig.backend?.adminApiKey),
+        // Only public auth settings should be here
     },
 
     // ── Domain / Network ──
     domain: {
-        url: rv('domain', envConfig.app?.domain),
-        appUrl: rv('appUrl', envConfig.app?.url, 'http://localhost:3310'),
-        corsOrigins: getSettings().corsOrigins || envConfig.backend?.corsOrigins || ['http://localhost:3310'],
+        url: rv('domain', ''),
+        appUrl: rv('appUrl', 'http://localhost:3310'),
+        corsOrigins: getSettings().corsOrigins || ['http://localhost:3310'],
     },
 
     // ── Platform Fees & Rates ──
@@ -103,8 +89,8 @@ export const CONFIG = {
 
     // ── Platform ──
     platform: {
-        name: envConfig.app?.name || 'HeadHunters',
-        currency: envConfig.app?.currency || 'HH',
+        name: 'HeadHunters',
+        currency: 'HH',
     },
 
     // ── Clicker Game ──
@@ -119,19 +105,19 @@ export const CONFIG = {
 
     // ── Platform TON Wallet ──
     wallet: {
-        address: envConfig.ton?.platformWalletAddress || '',
+        address: '', // Fetched from server
         currency: 'TON',
     },
 
     // ── TON Blockchain ──
     ton: {
-        network: envConfig.ton?.network || 'testnet',
-        platformAddress: envConfig.ton?.platformWalletAddress || '',
-        nftContractAddress: envConfig.ton?.nftCollectionAddress || null,
-        jettonMasterAddress: envConfig.ton?.jettonMasterAddress || null,
+        network: 'testnet',
+        platformAddress: '', // Fetched from server
+        nftContractAddress: null, // Fetched from server
+        jettonMasterAddress: null, // Fetched from server
         marketplaceAddress: null,
-        explorerUrl: envConfig.ton?.explorerUrl || 'https://testnet.tonscan.org',
-        tonToHHRate: envConfig.app?.tonToHHRate || 100,
+        explorerUrl: 'https://testnet.tonscan.org',
+        tonToHHRate: 100,
     },
 
     // ── Intervals (ms) — Increase to reduce CPU load ──

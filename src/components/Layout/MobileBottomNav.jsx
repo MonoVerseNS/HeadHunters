@@ -9,14 +9,9 @@ export default function MobileBottomNav() {
         { path: '/', icon: <FiGrid size={20} />, label: 'Главная' },
         { path: '/nft', icon: <FiImage size={20} />, label: 'Маркет' },
         { path: '/clicker', icon: <FiCreditCard size={20} />, label: 'Кликер' },
-        { path: '/leaderboard', icon: <FiAward size={20} />, label: 'Лидеры' },
-        { path: '/donate', icon: <span style={{ fontSize: '20px' }}>❤️</span>, label: 'Донат' },
+        { path: '/leaderboard', icon: <FiAward size={20} />, label: 'Топ' },
         { path: '/profile', icon: <FiUser size={20} />, label: 'Профиль' },
     ]
-
-    if (isAdmin) {
-        items.push({ path: '/admin', icon: <FiShield size={20} />, label: 'Админ' })
-    }
 
     return (
         <nav className="mobile-bottom-nav">

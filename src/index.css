@@ -192,10 +192,11 @@ img {
   background-clip: text;
 }
 
-/* ── App Layout ── */
+  /* ── App Layout ── */
 .app-layout {
   display: flex;
   min-height: 100vh;
+  background-color: var(--color-bg-primary);
 }
 
 .app-main {
@@ -205,6 +206,7 @@ img {
   flex-direction: column;
   min-height: 100vh;
   transition: margin-left var(--transition-base);
+  width: 100%;
 }
 
 .app-content {
@@ -214,6 +216,94 @@ img {
   max-width: 1400px;
   width: 100%;
   margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    margin-left: 0;
+  }
+  
+  .app-content {
+    padding: var(--space-md);
+    padding-top: calc(var(--header-height) + var(--space-md));
+    padding-bottom: 90px !important; /* Extra space for bottom nav + Telegram safe area */
+  }
+}
+
+/* ── Mobile Bottom Nav ── */
+.mobile-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 72px; /* Increased height for better thumb reach */
+    background: rgba(8, 8, 18, 0.98);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--color-border);
+    z-index: 1000;
+    align-items: center;
+    justify-content: space-around;
+    padding: 0 4px env(safe-area-inset-bottom); /* Support iOS home indicator */
+  }
+
+  .mobile-nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: var(--color-text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all var(--transition-fast);
+    flex: 1;
+    height: 100%;
+    min-width: 0;
+  }
+
+  .mobile-nav-item.active {
+    color: var(--color-accent-light);
+  }
+
+  .mobile-nav-item svg {
+    font-size: 22px !important;
+  }
+}
+
+/* ── NFT Grid & Cards ── */
+.nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-lg);
+}
+
+@media (max-width: 640px) {
+  .nft-grid {
+    grid-template-columns: repeat(2, 1fr); /* 2 columns on small screens */
+    gap: var(--space-sm);
+  }
+  
+  .nft-card-body {
+    padding: var(--space-sm);
+  }
+  
+  .nft-card-title {
+    font-size: 0.9rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .nft-grid {
+    grid-template-columns: 1fr; /* Single column on very small phones */
+  }
 }
 
 /* ── Sidebar ── */
