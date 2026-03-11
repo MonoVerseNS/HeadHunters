@@ -22,12 +22,16 @@ function TonWalletProviderWithConnect({ children }) {
     const { user, saveWalletAddress } = useAuth()
     const [tonConnectUI] = useTonConnectUI()
     const wallet = useTonWallet()
-    const friendlyAddress = useTonAddress(true)
+    const connectedWalletAddress = useTonAddress(true)
 
+    // Use backend address if wallet is not connected locally (persistence across browsers)
+    const backendAddress = user?.walletAddress
+    const address = connectedWalletAddress || backendAddress || ''
     const connected = !!wallet
-    const address = friendlyAddress || ''
+    const isReadOnly = !connected && !!backendAddress
+
     const shortAddress = address ? `${address.slice(0, 4)}...${address.slice(-4)}` : ''
-    const walletName = wallet?.device?.appName || 'Unknown Wallet'
+    const walletName = wallet?.device?.appName || (isReadOnly ? 'Linked Wallet' : 'Unknown Wallet')
 
     const [tonBalance, setTonBalance] = useState(0)
     const [hhBalance, setHhBalance] = useState(0)
@@ -42,8 +46,22 @@ function TonWalletProviderWithConnect({ children }) {
     const [onChainTxHistory, setOnChainTxHistory] = useState([])
     const pollRef = useRef(null)
 
+    // ── Network Check ──
+    useEffect(() => {
+        if (connected && wallet?.account?.chain) {
+            const currentChain = wallet.account.chain // "-239" = Mainnet, "-3" = Testnet
+            const isTestnetApp = CONFIG.ton.network === 'testnet'
+            
+            if (isTestnetApp && currentChain === '-239') {
+                alert('⚠️ Внимание! Вы подключены к Mainnet, но приложение работает в Testnet.\nПожалуйста, переключите сеть в кошельке на Testnet.')
+            } else if (!isTestnetApp && currentChain === '-3') {
+                alert('⚠️ Внимание! Вы подключены к Testnet, но приложение работает в Mainnet.\nПожалуйста, переключите сеть в кошельке на Mainnet.')
+            }
+        }
+    }, [connected, wallet])
+
     const refreshBalances = useCallback(async () => {
-        if (!connected || !address) return
+        if (!address) return
         setBalanceLoading(true)
         try {
             const summary = await getWalletSummary(address)
@@ -57,20 +75,20 @@ function TonWalletProviderWithConnect({ children }) {
             console.warn('[TonWallet] Balance refresh error:', err)
         }
         setBalanceLoading(false)
-    }, [connected, address])
+    }, [address])
 
     const refreshTransactions = useCallback(async () => {
-        if (!connected || !address) return
+        if (!address) return
         try {
             const txs = await getRecentTransactions(address, 20)
             setOnChainTxHistory(txs)
         } catch (err) {
             console.warn('[TonWallet] Tx history error:', err)
         }
-    }, [connected, address])
+    }, [address])
 
     useEffect(() => {
-        if (connected && address) {
+        if (address) {
             refreshBalances()
             refreshTransactions()
             pollRef.current = setInterval(refreshBalances, BALANCE_POLL_INTERVAL)
@@ -79,13 +97,19 @@ function TonWalletProviderWithConnect({ children }) {
             setOnChainNfts([]); setTelegramNfts([]); setOnChainTxHistory([])
         }
         return () => { if (pollRef.current) clearInterval(pollRef.current) }
-    }, [connected, address, refreshBalances, refreshTransactions])
+    }, [address, refreshBalances, refreshTransactions])
 
     const connect = useCallback(() => tonConnectUI.openModal(), [tonConnectUI])
-    const disconnect = useCallback(async () => tonConnectUI.disconnect(), [tonConnectUI])
+    const disconnect = useCallback(async () => {
+        if (connected) await tonConnectUI.disconnect()
+        // Note: we don't clear backendAddress here, as it is part of user profile
+    }, [tonConnectUI, connected])
 
     const sendTon = useCallback(async (amount, toAddress, comment = '') => {
-        if (!connected) return { success: false, error: 'Кошелёк не подключён' }
+        if (!connected) {
+            tonConnectUI.openModal()
+            return { success: false, error: 'Пожалуйста, подключите кошелёк для подписи транзакции' }
+        }
         setTxPending(true); setLastTxHash(null)
         try {
             const nanoTon = BigInt(Math.floor(amount * 1e9)).toString()

@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // ── Load config ──
 let envConfig = {}
 try {
-    envConfig = JSON.parse(readFileSync(join(__dirname, '..', 'env.json'), 'utf-8'))
+    envConfig = JSON.parse(readFileSync(join(__dirname, 'data', 'env.json'), 'utf-8'))
 } catch (e) {
     console.warn('[Wallet] env.json not found, using defaults')
 }
@@ -39,10 +39,19 @@ import { getHttpEndpoint } from '@orbs-network/ton-access'
 
 // ── TonClient instance ──
 let client = null
+let clientLastUsed = 0
+const CLIENT_TTL = 300_000 // 5 minutes
+
 async function getClient() {
-    if (client) return client
+    const now = Date.now()
+    if (client && (now - clientLastUsed < CLIENT_TTL)) {
+        clientLastUsed = now
+        return client
+    }
+    
     const endpoint = await getHttpEndpoint({ network: NETWORK })
     client = new TonClient({ endpoint })
+    clientLastUsed = now
     return client
 }
 
@@ -50,7 +59,42 @@ async function refreshClient() {
     console.log('[Wallet] Refreshing Orbs RPC endpoint...')
     const endpoint = await getHttpEndpoint({ network: NETWORK })
     client = new TonClient({ endpoint })
+    clientLastUsed = Date.now()
     return client
+}
+
+// ═══════════════════════════════════════
+// SEQNO MANAGER (SERIALIZED QUEUE)
+// ═══════════════════════════════════════
+
+const seqnoQueue = new Map() // walletAddress -> Promise
+
+async function runInQueue(address, fn) {
+    const current = seqnoQueue.get(address) || Promise.resolve()
+    const next = current.then(async () => {
+        try {
+            return await fn()
+        } catch (e) {
+            console.error(`[Wallet Queue] Error for ${address}:`, e.message)
+            throw e
+        }
+    }).catch(() => { /* ignore failed queue items to keep chain going */ })
+    
+    seqnoQueue.set(address, next)
+    return next
+}
+
+async function waitSeqnoChange(contract, initialSeqno, maxAttempts = 20) {
+    for (let i = 0; i < maxAttempts; i++) {
+        await sleep(2000)
+        try {
+            const currentSeqno = await contract.getSeqno()
+            if (currentSeqno > initialSeqno) return true
+        } catch (e) {
+            console.warn(`[Wallet] Seqno poll error: ${e.message}`)
+        }
+    }
+    return false
 }
 
 // ═══════════════════════════════════════
@@ -198,21 +242,19 @@ async function executeWithRetry(fn, desc, retries = 5) {
             const cl = await getClient()
             return await fn(cl)
         } catch (err) {
-            if (i < retries - 1) {
-                const backoff = 1500 * Math.pow(2, i);
-                console.warn(`[Wallet] RPC error (${err.message}) calling ${desc}. Retrying... (${i + 1}/${retries})`);
-                if (err.message?.includes('502') || err.message?.includes('status code 502')) {
-                    await refreshClient()
-                }
-                if (err.message?.includes('Too old seqno') || err.message?.includes('exit_code: -13')) {
-                    // Seqno mismatch or transient method error (sometimes -13 is transient right after deploy)
-                    await refreshClient()
-                    await sleep(2000)
-                }
-                await sleep(backoff)
-                continue
+            const isLast = i === retries - 1;
+            const backoff = 2000 * Math.pow(2, i);
+            
+            console.warn(`[Wallet] RPC error (${err.message}) calling ${desc}. Attempt ${i + 1}/${retries}`);
+            
+            if (err.message?.includes('502') || err.message?.includes('status code 502') || 
+                err.message?.includes('Too old seqno') || err.message?.includes('exit_code: -13')) {
+                await refreshClient()
+                await sleep(2000)
             }
-            throw err
+
+            if (isLast) throw err;
+            await sleep(backoff)
         }
     }
 }
@@ -361,17 +403,16 @@ export async function sendTon(encryptedMnemonic, toAddress, amountTon, comment =
 // SEND TON (FROM RAW MNEMONIC) - Platform use
 // ═══════════════════════════════════════
 export async function sendTonFromMnemonic(mnemonic, toAddress, amount, message = '') {
-    try {
-        const keyPair = await mnemonicToWalletKey(mnemonic.split(' '))
-        const wallet = WalletContractV5R1.create({
-            publicKey: keyPair.publicKey,
-            workchain: 0
-        })
-        const contract = client.open(wallet)
+    const keyPair = await mnemonicToWalletKey(mnemonic.split(' '))
+    const wallet = WalletContractV5R1.create({ publicKey: keyPair.publicKey, workchain: 0 })
+    const walletAddress = wallet.address.toString()
 
-        const seqno = await executeWithRetry(() => contract.getSeqno(), 'getSeqno')
-
+    return await runInQueue(walletAddress, async () => {
         try {
+            const cl = await getClient()
+            const contract = cl.open(wallet)
+            const seqno = await executeWithRetry(() => contract.getSeqno(), 'getSeqno', 3)
+
             await executeWithRetry(() => contract.sendTransfer({
                 seqno,
                 secretKey: keyPair.secretKey,
@@ -383,127 +424,74 @@ export async function sendTonFromMnemonic(mnemonic, toAddress, amount, message =
                 })],
                 sendMode: 3
             }), 'sendTransfer', 2)
-        } catch (sendErr) {
-            console.warn(`[Wallet] sendTransfer threw exception (API error?), but tx might be in mempool: ${sendErr.message}`)
-        }
 
-        // Poll for confirmation
-        let currentSeqno = seqno
-        let attempts = 0
-        while (currentSeqno === seqno && attempts < 15) {
-            await sleep(2000)
-            try {
-                currentSeqno = await contract.getSeqno()
-            } catch (ignore) { }
-            attempts++
-        }
+            const confirmed = await waitSeqnoChange(contract, seqno)
+            if (!confirmed) throw new Error('Timeout waiting for seqno change')
 
-        if (currentSeqno === seqno) {
-            return { success: false, error: 'Транзакция не подтвердилась в сети TON (таймаут 30с)' }
+            return { success: true, hash: 'confirmed' }
+        } catch (e) {
+            console.error('[Wallet] Send Error:', e)
+            return { success: false, error: e.message }
         }
-
-        return { success: true, hash: 'confirmed' }
-    } catch (e) {
-        console.error('[Wallet] Send Error:', e)
-        return { success: false, error: e.message }
-    }
+    })
 }
 
 // ═══════════════════════════════════════
 // SEND JETTON (FROM RAW MNEMONIC) - Platform use
 // ═══════════════════════════════════════
 export async function sendJettonFromMnemonic(mnemonic, toAddress, amountJetton, jettonMasterStr, message = '') {
-    try {
-        const keyPair = await mnemonicToWalletKey(mnemonic.split(' '))
-        const wallet = WalletContractV5R1.create({
-            publicKey: keyPair.publicKey,
-            workchain: 0
-        })
-        const contract = client.open(wallet)
+    const keyPair = await mnemonicToWalletKey(mnemonic.split(' '))
+    const wallet = WalletContractV5R1.create({ publicKey: keyPair.publicKey, workchain: 0 })
+    const walletAddress = wallet.address.toString()
 
-        const ownerAddressStr = wallet.address.toString()
-        const ownerAddress = Address.parse(ownerAddressStr)
-        const jettonMaster = Address.parse(jettonMasterStr)
-
-        console.log(`[Wallet] sendJettonFromMnemonic START. Owner: ${ownerAddressStr}, Target: ${toAddress}, Amount: ${amountJetton}`)
-
-        const tb = new TupleBuilder()
-        tb.writeAddress(ownerAddress)
-
-        console.log(`[Wallet] Fetching senderJettonWallet...`)
-        const result = await runMethodWithRetry(
-            jettonMaster,
-            'get_wallet_address',
-            tb.build()
-        )
-        const senderJettonWallet = result.stack.readAddress()
-        console.log(`[Wallet] senderJettonWallet resolved: ${senderJettonWallet.toString()}`)
-
-        const amountNano = toNano(amountJetton.toString())
-        const coreCell = beginCell()
-            .storeUint(0xf8a7ea5, 32) // OP transfer
-            .storeUint(Math.floor(Date.now() / 1000), 64) // query_id
-            .storeCoins(amountNano) // amount
-            .storeAddress(Address.parse(toAddress)) // destination
-            .storeAddress(ownerAddress) // response_destination
-            .storeBit(false) // custom_payload
-            .storeCoins(toNano('0.01')) // forward_ton_amount
-            .storeBit(false) // forward_payload
-            .endCell()
-
-        console.log(`[Wallet] Fetching seqno...`)
-        const seqno = await executeWithRetry(() => contract.getSeqno(), 'getSeqno')
-        console.log(`[Wallet] seqno fetched: ${seqno}`)
-
+    return await runInQueue(walletAddress, async () => {
         try {
-            console.log(`[Wallet] Executing sendTransfer...`)
-            await executeWithRetry(async (cl) => {
-                const innerContract = cl.open(wallet)
-                const freshSeqno = await innerContract.getSeqno()
-                console.log(`[Wallet] Using fresh seqno: ${freshSeqno}`)
+            const cl = await getClient()
+            const contract = cl.open(wallet)
 
-                return await innerContract.sendTransfer({
-                    seqno: freshSeqno,
-                    secretKey: keyPair.secretKey,
-                    messages: [internal({
-                        to: senderJettonWallet,
-                        value: toNano('0.08'), // Increased to 0.08 for super-safe Jetton ops
-                        body: coreCell,
-                        bounce: true
-                    })],
-                    sendMode: 1
-                })
-            }, 'sendTransfer', 3)
-            console.log(`[Wallet] sendTransfer complete.`)
-        } catch (sendErr) {
-            console.error(`[Wallet] Jetton sendTransfer ERROR: ${sendErr.message}`)
-            throw sendErr // Propagate to caller
+            const ownerAddress = Address.parse(walletAddress)
+            const jettonMaster = Address.parse(jettonMasterStr)
+
+            const tb = new TupleBuilder()
+            tb.writeAddress(ownerAddress)
+
+            const result = await runMethodWithRetry(jettonMaster, 'get_wallet_address', tb.build())
+            const senderJettonWallet = result.stack.readAddress()
+
+            const coreCell = beginCell()
+                .storeUint(0xf8a7ea5, 32)
+                .storeUint(Math.floor(Date.now() / 1000), 64)
+                .storeCoins(toNano(amountJetton.toString()))
+                .storeAddress(Address.parse(toAddress))
+                .storeAddress(ownerAddress)
+                .storeBit(false)
+                .storeCoins(toNano('0.01'))
+                .storeBit(false)
+                .endCell()
+
+            const seqno = await executeWithRetry(() => contract.getSeqno(), 'getSeqno', 3)
+
+            await executeWithRetry(() => contract.sendTransfer({
+                seqno,
+                secretKey: keyPair.secretKey,
+                messages: [internal({
+                    to: senderJettonWallet,
+                    value: toNano('0.08'),
+                    body: coreCell,
+                    bounce: true
+                })],
+                sendMode: 1
+            }), 'sendJettonTransfer', 3)
+
+            const confirmed = await waitSeqnoChange(contract, seqno)
+            if (!confirmed) throw new Error('Timeout waiting for seqno change (Jetton)')
+
+            return { success: true, hash: 'confirmed' }
+        } catch (e) {
+            console.error('[Wallet] Jetton Send Error:', e)
+            return { success: false, error: e.message }
         }
-
-        // Poll for confirmation
-        console.log(`[Wallet] Polling for seqno change from ${seqno}...`)
-        let currentSeqno = seqno
-        let attempts = 0
-        while (currentSeqno === seqno && attempts < 15) {
-            await sleep(2000)
-            try {
-                currentSeqno = await contract.getSeqno()
-            } catch (ignore) { }
-            console.log(`[Wallet] Poll attempt ${attempts + 1}, seqno is: ${currentSeqno}`)
-            attempts++
-        }
-
-        if (currentSeqno === seqno) {
-            console.log(`[Wallet] seqno timeout!`)
-            return { success: false, error: 'Транзакция не подтвердилась в блоке (таймаут 30с). Проверьте баланс TON для комиссии.' }
-        }
-
-        console.log(`[Wallet] seqno changed to ${currentSeqno}! Transaction SUCCESS.`)
-        return { success: true, hash: 'confirmed' }
-    } catch (e) {
-        console.error('[Wallet] Jetton Send Error:', e)
-        return { success: false, error: e.message }
-    }
+    })
 }
 
 // ═══════════════════════════════════════

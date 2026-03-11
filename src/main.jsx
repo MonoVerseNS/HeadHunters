@@ -8,7 +8,50 @@ import { WalletProvider } from './context/WalletContext.jsx'
 import { TonWalletProvider } from './blockchain/TonWalletContext.jsx'
 import { ToastProvider } from './components/UI/Toast.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
+import { CONFIG } from './config'
 import './index.css'
+
+// ── Fetch public config from server ──
+async function initApp() {
+  try {
+    const res = await fetch('/api/config')
+    const remoteConfig = await res.json()
+    if (remoteConfig) {
+      if (remoteConfig.telegram?.botUsername) CONFIG.telegram.botId = remoteConfig.telegram.botUsername
+      if (remoteConfig.ton?.network) CONFIG.ton.network = remoteConfig.ton.network
+      if (remoteConfig.ton?.nftCollectionAddress) CONFIG.ton.nftContractAddress = remoteConfig.ton.nftCollectionAddress
+      if (remoteConfig.ton?.jettonMasterAddress) CONFIG.ton.jettonMasterAddress = remoteConfig.ton.jettonMasterAddress
+      if (remoteConfig.ton?.platformWalletAddress) {
+        CONFIG.ton.platformAddress = remoteConfig.ton.platformWalletAddress
+        CONFIG.wallet.address = remoteConfig.ton.platformWalletAddress
+      }
+      if (remoteConfig.app?.name) CONFIG.platform.name = remoteConfig.app.name
+      if (remoteConfig.app?.currency) CONFIG.platform.currency = remoteConfig.app.currency
+    }
+  } catch (e) {
+    console.warn('[HH] Failed to fetch remote config:', e)
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <ErrorBoundary>
+      <SafeTonConnectProvider>
+        <BrowserRouter>
+          <ToastProvider>
+            <AuthProvider>
+              <WalletProvider>
+                <TonWalletProvider>
+                  <App />
+                </TonWalletProvider>
+              </WalletProvider>
+            </AuthProvider>
+          </ToastProvider>
+        </BrowserRouter>
+      </SafeTonConnectProvider>
+    </ErrorBoundary>
+  )
+}
+
+initApp()
 
 // ── Global error handlers — prevent Telegram WebView crash ──
 window.addEventListener('error', (e) => {
@@ -52,20 +95,3 @@ function SafeTonConnectProvider({ children }) {
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <ErrorBoundary>
-    <SafeTonConnectProvider>
-      <BrowserRouter>
-        <ToastProvider>
-          <AuthProvider>
-            <WalletProvider>
-              <TonWalletProvider>
-                <App />
-              </TonWalletProvider>
-            </WalletProvider>
-          </AuthProvider>
-        </ToastProvider>
-      </BrowserRouter>
-    </SafeTonConnectProvider>
-  </ErrorBoundary>
-)

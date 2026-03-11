@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FiUsers, FiShield, FiKey, FiSearch, FiLock, FiUnlock, FiPlus, FiTrash2, FiEye, FiAlertTriangle, FiDollarSign, FiLayers, FiBell, FiSend, FiArrowUpRight, FiArrowDownLeft, FiImage, FiSlash, FiUpload, FiSettings, FiGlobe, FiSave, FiEyeOff } from 'react-icons/fi'
 import { useAuth } from '../context/AuthContext'
@@ -21,6 +21,7 @@ export default function AdminPage() {
         toggleUserBlock, deleteUser, addAdminId, removeAdminId,
         addInviteCode, removeInviteCode,
         addCollection, editCollection, deleteCollection,
+        socket // WebSocket support
     } = useAuth()
     const {
         platformBalance, platformTonBalance, platformConfigured, platformWallet, transactions, addNotification,
@@ -30,7 +31,46 @@ export default function AdminPage() {
     } = useWallet()
     const { addToast } = useToast()
 
-    const [activeTab, setActiveTab] = useState('platform') // Default to platform to show money logic first
+    // Real-time Activity Logs (WebSocket based)
+    const [activityLogs, setActivityLogs] = useState([])
+    const [logFilter, setLogFilter] = useState('')
+
+    useEffect(() => {
+        if (!socket) return
+
+        const handleBalanceUpdate = (data) => {
+            setActivityLogs(prev => [{
+                id: Date.now(),
+                action: 'balance_update',
+                userId: String(data.userId || ''),
+                amount: data.change,
+                description: data.description,
+                timestamp: Date.now()
+            }, ...prev].slice(0, 100))
+        }
+
+        const handleNewBid = (data) => {
+            setActivityLogs(prev => [{
+                id: Date.now(),
+                action: 'new_bid',
+                userId: String(data.currentBidderId || ''),
+                amount: data.currentBid,
+                auctionId: data.auctionId,
+                timestamp: Date.now()
+            }, ...prev].slice(0, 100))
+        }
+
+        socket.on('balance_updated', handleBalanceUpdate)
+        socket.on('new_bid', handleNewBid)
+
+        return () => {
+            socket.off('balance_updated', handleBalanceUpdate)
+            socket.off('new_bid', handleNewBid)
+        }
+    }, [socket])
+
+    // Funds Management
+    const [activeTab, setActiveTab] = useState('platform') // Default to platform
     const [searchQuery, setSearchQuery] = useState('')
     const [selectedUser, setSelectedUser] = useState(null)
     const [confirmBlock, setConfirmBlock] = useState(null)
@@ -42,31 +82,12 @@ export default function AdminPage() {
     // Collections
     const [collModal, setCollModal] = useState(null)
     const [collName, setCollName] = useState('')
-    const [collImage, setCollImage] = useState('') // Replaces Emoji
+    const [collImage, setCollImage] = useState('') 
     const [collDesc, setCollDesc] = useState('')
 
     // Broadcast
     const [broadcastMsg, setBroadcastMsg] = useState('')
 
-    // Logs
-    const [activityLogs, setActivityLogs] = useState(logger.getLast(100))
-    const [logFilter, setLogFilter] = useState('')
-    const [apiLogs, setApiLogs] = useState([])
-
-    // Subscribe to API request logs
-    useEffect(() => {
-        const unsub = api.onRequest(entry => setApiLogs(prev => [entry, ...prev].slice(0, 200)))
-        return unsub
-    }, [])
-
-    // Poll for updates every 5s
-    useInterval(() => {
-        refreshUsers()
-    }, 5000)
-
-    const refreshLogs = () => setActivityLogs(logger.getLast(100))
-
-    // Funds Management
     const [mintAmount, setMintAmount] = useState('')
     const [withdrawAmount, setWithdrawAmount] = useState('')
     const [withdrawAddress, setWithdrawAddress] = useState('')
@@ -144,6 +165,7 @@ export default function AdminPage() {
         { id: 'codes', label: 'Инвайт-коды', icon: <FiKey /> },
         { id: 'collections', label: 'Коллекции', icon: <FiLayers /> },
         { id: 'broadcast', label: 'Рассылка', icon: <FiBell /> },
+        { id: 'logs', label: 'Логи', icon: <FiSettings /> },
         { id: 'settings', label: 'Настройки', icon: <FiSettings /> },
     ]
 
@@ -773,12 +795,11 @@ export default function AdminPage() {
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
                             <input className="input" placeholder="Фильтр по действию..." value={logFilter}
                                 onChange={e => setLogFilter(e.target.value)} style={{ flex: 1, minWidth: '200px' }} />
-                            <button className="btn btn-ghost btn-sm" onClick={refreshLogs}>🔄 Обновить</button>
-                            <button className="btn btn-danger btn-sm" onClick={() => { logger.clear(); refreshLogs(); addToast('Логи очищены', 'info') }}>🗑 Очистить</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => { setActivityLogs([]); addToast('Логи очищены', 'info') }}>🗑 Очистить</button>
                         </div>
 
                         <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>
-                            Всего записей: {activityLogs.length}
+                            Всего записей (текущая сессия): {activityLogs.length}
                         </div>
 
                         <div style={{ maxHeight: '500px', overflowY: 'auto', display: 'grid', gap: '4px' }}>

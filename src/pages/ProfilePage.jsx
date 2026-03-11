@@ -19,23 +19,60 @@ import { logger } from '../api/logger'
 import { toUserFriendlyAddress } from '../utils/ton'
 
 export default function ProfilePage() {
-    const { user, updateUserProfile } = useAuth()
+    const { user, updateUserProfile, fetchWithAuth } = useAuth()
     const {
         balance, transactions, ownedNFTs, allNFTs,
         startAuction, cancelAuction, removeOwnedNFT, returnNFTToOwner,
-        transferNFT, withdrawNFT
+        transferNFT, withdrawNFT, refreshNFTs
     } = useWallet()
     const { addToast } = useToast()
 
     const [activeTab, setActiveTab] = useState('nfts') // 'nfts' | 'auctions' | 'wallet'
 
+    // My Auctions logic
+    const [myAuctions, setMyAuctions] = useState([])
+    const [isLoadingAuctions, setIsLoadingAuctions] = useState(false)
+
+    const loadMyAuctions = useCallback(async () => {
+        if (!user?.id) return
+        setIsLoadingAuctions(true)
+        try {
+            const res = await fetchWithAuth(`/api/user/${user.id}/auctions`)
+            if (res.ok) {
+                const data = await res.json()
+                setMyAuctions(data.map(a => ({
+                    id: a.id,
+                    nftId: a.nft_id,
+                    name: a.name,
+                    image: a.image,
+                    emoji: a.emoji,
+                    color: a.color,
+                    creatorId: a.creator_id,
+                    startPrice: a.start_price,
+                    currentBid: a.current_bid,
+                    currentBidderId: a.current_bidder_id,
+                    endsAt: a.ends_at,
+                    status: a.status,
+                    bidsCount: a.bids_count || 0,
+                    isDirectSale: !!a.buy_now_price && a.start_price === a.buy_now_price
+                })))
+            }
+        } catch (e) {
+            console.error('[Profile] Load auctions error:', e)
+        } finally {
+            setIsLoadingAuctions(false)
+        }
+    }, [user?.id, fetchWithAuth])
+
+    useEffect(() => {
+        loadMyAuctions()
+        const iv = setInterval(loadMyAuctions, 15000)
+        return () => clearInterval(iv)
+    }, [loadMyAuctions])
 
     // Edit Profile Modal
     const [editProfileModal, setEditProfileModal] = useState(false)
     const [editDesc, setEditDesc] = useState('')
-
-    // Deposit Modal
-
 
     // Detail Modal
     const [detailNft, setDetailNft] = useState(null)
@@ -52,20 +89,6 @@ export default function ProfilePage() {
     const [durationMinutes, setDurationMinutes] = useState(0)
     const [durationSeconds, setDurationSeconds] = useState(0)
     const [bidStep, setBidStep] = useState(1) // Configurable bid increment
-
-    // My Auctions logic
-    const [myAuctions, setMyAuctions] = useState([])
-
-    useEffect(() => {
-        const load = () => {
-            const stored = JSON.parse(localStorage.getItem('hh_auctions') || '[]')
-            const mine = stored.filter(a => a.creatorId === user?.id || a.currentBidderId === user?.id || (a.bids && a.bids.some(b => b.user_id === user?.id || b.userId === user?.id)))
-            setMyAuctions(mine)
-        }
-        load()
-        const iv = setInterval(load, CONFIG.intervals.profilePoll)
-        return () => clearInterval(iv)
-    }, [user?.id])
 
     useEffect(() => {
         if (user) setEditDesc(user.description || '')
