@@ -24,16 +24,27 @@ try {
     console.warn('[Wallet] env.json not found, using defaults')
 }
 
-const NETWORK = envConfig.ton?.network || 'testnet'
+let NETWORK = envConfig.ton?.network || 'testnet'
 const RPC_ENDPOINT = NETWORK === 'mainnet'
     ? 'https://toncenter.com/api/v2/jsonRPC'
     : 'https://testnet.toncenter.com/api/v2/jsonRPC'
 
-// Encryption key for mnemonics — derived from jwtSecret
-const ENCRYPTION_KEY = (() => {
-    const secret = envConfig.backend?.jwtSecret || 'default-dev-key-change-in-production'
+function deriveEncryptionKey(secret) {
     return crypto.createHash('sha256').update(secret).digest()
-})()
+}
+
+let ENCRYPTION_KEY = deriveEncryptionKey(envConfig.backend?.jwtSecret || 'default-dev-key-change-in-production')
+
+export function setWalletConfig({ network, jwtSecret } = {}) {
+    if (typeof network === 'string' && network.trim()) {
+        NETWORK = network.trim().toLowerCase()
+        client = null
+        clientLastUsed = 0
+    }
+    if (typeof jwtSecret === 'string' && jwtSecret.trim()) {
+        ENCRYPTION_KEY = deriveEncryptionKey(jwtSecret.trim())
+    }
+}
 
 import { getHttpEndpoint } from '@orbs-network/ton-access'
 

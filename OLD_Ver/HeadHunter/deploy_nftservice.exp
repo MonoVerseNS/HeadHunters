@@ -1,0 +1,8 @@
+spawn scp -o StrictHostKeyChecking=no server/nftService.js root@95.182.97.163:/var/www/headhunter/server/
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof
+spawn ssh -o StrictHostKeyChecking=no root@95.182.97.163 "cd /var/www/headhunter/server && pm2 restart headhunter"
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof

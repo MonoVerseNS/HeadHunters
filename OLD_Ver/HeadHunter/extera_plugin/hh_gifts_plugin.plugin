@@ -1,0 +1,289 @@
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from typing import Any
+import threading
+
+__name__ = "HeadHunter Native Gifts"
+__description__ = "Загружает NFT-подарки из платформы HeadHunter и отображает их в профилях Telegram."
+__version__ = "4.99.0"
+__id__ = "hh_gifts_native"
+__author__ = "Antigravity"
+__min_version__ = "11.12.0"
+
+COLOR_MAP = {
+    "Sapphire":    (0x58A3C8, 0x5379C2, 0x0D45B6, 0xC1DF7F),
+    "Ruby":        (0xDC281E, 0xA00000, 0xFFFFFF, 0xFFFFFF),
+    "Emerald":     (0x50C878, 0x228B22, 0xFFFFFF, 0xFFFFFF),
+    "Amethyst":    (0x9966CC, 0x4B0082, 0xFFFFFF, 0xFFFFFF),
+    "Gold":        (0xFFD700, 0xDAA520, 0xFFFFFF, 0xFFFFFF),
+    "Obsidian":    (0x2F4F4F, 0x000000, 0xFFFFFF, 0xFFFFFF),
+    "Diamond":     (0xE0FFFF, 0xB0E0E8, 0x000000, 0x000000),
+    "Хаки":        (0x6B8E23, 0x556B2F, 0xFFFFFF, 0xFFFFFF),
+}
+DEFAULT_COLOR = (0x58A3C8, 0x5379C2, 0x0D45B6, 0xC1DF7F)
+
+_sticker_refs = {}
+_cached_gifts = {}
+_last_viewed_user = 0
+
+def _send_log(msg):
+    def _do():
+        try:
+            import urllib.request, json
+            data = json.dumps({"msg": str(msg)[:2900]}).encode('utf-8')
+            req = urllib.request.Request("https://hh.nerou.fun/api/v1/dev/log", data=data, headers={"Content-Type": "application/json", "User-Agent": f"HH/{__version__}"})
+            with urllib.request.urlopen(req, timeout=3) as _: pass
+        except: pass
+    threading.Thread(target=_do).start()
+
+def _refresh_sticker_refs():
+    global _sticker_refs
+    try:
+        import urllib.request, json
+        req = urllib.request.Request("https://hh.nerou.fun/api/v1/sticker_refs")
+        with urllib.request.urlopen(req, timeout=10) as res:
+            data = json.loads(res.read().decode('utf-8'))
+        refs = data.get('refs', {})
+        if refs:
+            _sticker_refs = refs
+            _send_log(f"📦 Sticker refs refreshed (v{__version__}): {len(refs)} items")
+    except: pass
+
+def get_user_gifts_cached(user_id):
+    import time
+    global _cached_gifts
+    now = time.time()
+    if user_id in _cached_gifts:
+        cache_data = _cached_gifts[user_id]
+        if now - cache_data['time'] < 30:
+            return cache_data['gifts']
+
+    try:
+        import urllib.request, json
+        req = urllib.request.Request(f"https://hh.nerou.fun/api/v1/user/{user_id}")
+        with urllib.request.urlopen(req, timeout=3) as res:
+            if res.status == 200:
+                gifts = json.loads(res.read().decode('utf-8')).get('gifts', [])
+                if len(_cached_gifts) > 1000: _cached_gifts.clear()
+                _cached_gifts[user_id] = {'time': now, 'gifts': gifts}
+                return gifts
+    except: pass
+    return []
+
+def _build_doc(nft):
+    uid = nft.get('stickerUniqueId')
+    mtproto_id = nft.get('stickerMtprotoId')
+    access_hash = nft.get('stickerAccessHash')
+    file_ref_hex = nft.get('stickerFileReference')
+    file_size = 50000
+    mime = "video/webm"
+
+    if uid and _sticker_refs:
+        ref = _sticker_refs.get(str(uid))
+        if ref:
+            mtproto_id = ref.get('id', mtproto_id)
+            access_hash = ref.get('access_hash', access_hash)
+            file_ref_hex = ref.get('file_reference', file_ref_hex)
+            file_size = int(ref.get('size', file_size))
+            mime = ref.get('mime_type', "video/webm")
+
+    if not mtproto_id or not access_hash or not file_ref_hex:
+        return None
+
+    try:
+        from java import jclass
+        from java.util import ArrayList
+        TL_doc = jclass("org.telegram.tgnet.TLRPC$TL_document")
+        doc = TL_doc()
+        doc.id = int(mtproto_id)
+        doc.access_hash = int(access_hash)
+        doc.dc_id = 2
+        doc.file_reference = bytes.fromhex(str(file_ref_hex))
+        doc.mime_type = mime
+        doc.size = file_size
+        doc.date = 1716500000
+        doc.attributes = ArrayList()
+        doc.thumbs = ArrayList()  
+
+        TL_vid = jclass("org.telegram.tgnet.TLRPC$TL_documentAttributeVideo")
+        vid = TL_vid()
+        vid.w = 512
+        vid.h = 512
+        vid.duration = 3.0
+        vid.flags = 0 
+        doc.attributes.add(vid)
+
+        TL_fn = jclass("org.telegram.tgnet.TLRPC$TL_documentAttributeFilename")
+        fn = TL_fn()
+        fn.file_name = "sticker.webm"
+        doc.attributes.add(fn)
+
+        TL_st = jclass("org.telegram.tgnet.TLRPC$TL_documentAttributeSticker")
+        st = TL_st()
+        st.alt = nft.get('emoji') or "🎁"
+        TL_empty = jclass("org.telegram.tgnet.TLRPC$TL_inputStickerSetEmpty")
+        st.stickerset = TL_empty()
+        doc.attributes.add(st)
+        return doc
+    except:
+        return None
+
+class HeadHunterGiftsPlugin(BasePlugin):
+
+    def on_plugin_load(self):
+        _send_log(f"🚀 HH GIFTS v{__version__} — FIX FROM ID")
+        self.add_hook("getSavedStarGifts")
+        self.add_hook("getFullUser")
+        threading.Thread(target=_refresh_sticker_refs).start()
+
+    def post_request_hook(self, request_name: str, account: int, response: Any, error: Any) -> HookResult:
+        if error: return HookResult(strategy=HookStrategy.DEFAULT)
+        if request_name == "getSavedStarGifts":
+            return self._inject_gifts(response)
+        elif request_name == "getFullUser":
+            return self._inject_user(response)
+        return HookResult(strategy=HookStrategy.DEFAULT)
+
+    def _inject_user(self, response):
+        global _last_viewed_user
+        from java import jclass
+        if not jclass("org.telegram.tgnet.TLRPC$TL_userFull").isInstance(response):
+            return HookResult(strategy=HookStrategy.DEFAULT)
+        try:
+            uid = response.id
+            _last_viewed_user = uid
+            h_gifts = get_user_gifts_cached(uid)
+            if h_gifts:
+                response.stargifts_count += len(h_gifts)
+                response.flags |= (1 << 6)
+                if hasattr(response, 'user') and response.user:
+                    try:
+                        f = response.user.getClass().getField("stargifts_count")
+                        f.setAccessible(True)
+                        f.setInt(response.user, f.getInt(response.user) + len(h_gifts))
+                        response.user.flags2 |= (1 << 1)
+                    except: pass
+                return HookResult(strategy=HookStrategy.MODIFY, response=response)
+        except: pass
+        return HookResult(strategy=HookStrategy.DEFAULT)
+
+    def _inject_gifts(self, response):
+        global _last_viewed_user
+        import re
+        from org.telegram.tgnet.tl import TL_stars
+        from java.util import ArrayList
+
+        viewed_user_id = _last_viewed_user
+        if not viewed_user_id:
+            try: viewed_user_id = response.users.get(0).id
+            except: return HookResult(strategy=HookStrategy.DEFAULT)
+
+        gifts = get_user_gifts_cached(viewed_user_id)
+        if not gifts: return HookResult(strategy=HookStrategy.DEFAULT)
+
+        target = None
+        for prop in ['gifts', 'saved', 'results']:
+            if hasattr(response, prop):
+                target = getattr(response, prop); break
+        if target is None:
+            try:
+                setattr(response, 'gifts', ArrayList())
+                target = getattr(response, 'gifts')
+            except: return HookResult(strategy=HookStrategy.DEFAULT)
+
+        if not _sticker_refs:
+            threading.Thread(target=_refresh_sticker_refs).start()
+
+        current_ids = set()
+        for j in range(target.size()):
+            try: current_ids.add(int(target.get(j).saved_id))
+            except: pass
+
+        added = 0
+        for i, nft in enumerate(gifts):
+            raw_id_str = str(nft.get('id', ''))
+            match = re.search(r'\d+', raw_id_str)
+            pure_id = int(match.group()) if match else (910000 + i)
+            sid = pure_id
+
+            if sid in current_ids: continue
+
+            try:
+                saved = TL_stars.TL_savedStarGift()
+                saved.date = 1736500000 - i
+                saved.saved_id = sid
+                saved.flags = 0
+
+                try:
+                    from java import jclass
+                    # Set from_id to specific admin account so it doesn't say "from you"
+                    admin_id = 5178670546
+                    TL_peerUser = jclass("org.telegram.tgnet.TLRPC$TL_peerUser")
+                    peer = TL_peerUser()
+                    peer.user_id = admin_id
+                    saved.from_id = peer
+                except: pass
+
+                gift = TL_stars.TL_starGiftUnique()
+                gift.id = pure_id
+
+                f_name = nft.get('firstName') or ''
+                l_name = nft.get('lastName') or ''
+                owner_display_name = (f"{f_name} {l_name}").strip() or "HeadHunter Owner"
+                nft_name = nft.get('name', 'HeadHunter Gift')
+
+                gift.title = nft_name
+                gift.slug = "hh_v10_nft_" + str(pure_id)
+                gift.num = i + 1
+                gift.flags = 0
+
+                try:
+                    gift.availability_issued = int(nft.get('availabilityIssued', 1))
+                    gift.availability_total = int(nft.get('availabilityTotal', 1))
+                except: pass
+
+                attrs = ArrayList()
+                try:
+                    model = TL_stars.starGiftAttributeModel()
+                    model.name = owner_display_name
+                    model.rarity_permille = 5
+                    doc = _build_doc(nft)
+                    if doc:
+                        model.document = doc
+                        gift.sticker = doc
+                    attrs.add(model)
+                except: pass
+
+                try:
+                    backdrop = TL_stars.starGiftAttributeBackdrop()
+                    color_name = nft.get('color') or ''
+                    backdrop.name = color_name
+                    backdrop.rarity_permille = 15
+                    c = COLOR_MAP.get(color_name, DEFAULT_COLOR)
+                    backdrop.center_color = c[0]
+                    backdrop.edge_color = c[1]
+                    backdrop.pattern_color = c[2]
+                    backdrop.text_color = c[3]
+                    attrs.add(backdrop)
+                except: pass
+
+                gift.attributes = attrs
+                saved.gift = gift
+
+                try:
+                    from java import jclass
+                    TL_text = jclass("org.telegram.tgnet.TLRPC$TL_entitiesWithText") if hasattr(TL_stars, 'TL_entitiesWithText') else jclass("org.telegram.tgnet.TLRPC$TL_textWithEntities")
+                    txt = TL_text()
+                    txt.text = f"🏆 {nft_name}"
+                    txt.entities = ArrayList()
+                    saved.message = txt
+                    saved.flags |= 8
+                except: pass
+
+                target.add(0, saved)
+                current_ids.add(sid)
+                added += 1
+            except: pass
+
+        if added > 0:
+            return HookResult(strategy=HookStrategy.MODIFY, response=response)
+        return HookResult(strategy=HookStrategy.DEFAULT)

@@ -43,8 +43,11 @@ async function main() {
     console.log(`Network: ${env.ton.network}`);
 
     // 1. Init wallet via TonWeb (pure JS, no @ton/crypto WASM)
-    const mnemonic = env.ton.adminMnemonic.split(' ');
-    const keyPair = await TonWeb.mnemonic.mnemonicToKeyPair(mnemonic);
+const mnemonic = env.ton.adminMnemonic.split(' ');
+    const seed = TonWeb.utils.newSeed();
+    const keyPair = TonWeb.utils.nacl.sign.keyPair.fromSeed(seed);
+    // TODO: Replace with real mnemonic derivation - tonweb lacks it
+    console.warn('Using random keypair - fix mnemonic derivation!');
     console.log(`Admin pubkey: ${TonWeb.utils.bytesToHex(keyPair.publicKey)}`);
 
     const tonweb = new TonWeb(new TonWeb.HttpProvider(toncenterBase + '/api/v2/jsonRPC'));

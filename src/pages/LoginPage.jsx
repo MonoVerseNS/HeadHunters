@@ -4,8 +4,7 @@ import { motion } from 'framer-motion'
 import { FiShield, FiCheckCircle, FiZap, FiKey } from 'react-icons/fi'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/UI/Toast'
-
-const TELEGRAM_BOT_ID = 'HeadHuntersC_bot'
+import { CONFIG } from '../config'
 
 export default function LoginPage() {
     const { isAuthenticated, loginWithTelegram } = useAuth()
@@ -139,7 +138,7 @@ export default function LoginPage() {
         if (telegramRef.current && telegramRef.current.childElementCount === 0) {
             const script = document.createElement('script')
             script.src = 'https://telegram.org/js/telegram-widget.js?22'
-            script.setAttribute('data-telegram-login', TELEGRAM_BOT_ID)
+            script.setAttribute('data-telegram-login', CONFIG.telegram.botId)
             script.setAttribute('data-size', 'large')
             script.setAttribute('data-userpic', 'false')
             script.setAttribute('data-onauth', 'onTelegramLoginSuccess(user)')

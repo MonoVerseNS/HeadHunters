@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FiCreditCard, FiArrowUpRight, FiArrowDownLeft, FiImage, FiSettings, FiActivity, FiEdit2, FiUser, FiGlobe, FiLink, FiCopy, FiCheck } from 'react-icons/fi'
 import { QRCodeSVG } from 'qrcode.react'

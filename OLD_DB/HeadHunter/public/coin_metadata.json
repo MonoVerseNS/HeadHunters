@@ -1,0 +1,7 @@
+{
+    "name": "HunterCoin",
+    "symbol": "HHCOIN",
+    "description": "Локальная монета для проекта head-hunters.ton",
+    "image": "https://hh.nerou.fun/coin-logo.png",
+    "decimals": "9"
+}

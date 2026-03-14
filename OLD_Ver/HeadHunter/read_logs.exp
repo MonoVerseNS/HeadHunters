@@ -1,0 +1,4 @@
+spawn ssh -o StrictHostKeyChecking=no root@95.182.97.163 "pm2 logs headhunter --lines 100 --nostream --err"
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof
