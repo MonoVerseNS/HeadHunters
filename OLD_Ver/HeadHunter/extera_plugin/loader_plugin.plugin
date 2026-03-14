@@ -1,0 +1,87 @@
+from base_plugin import BasePlugin
+
+__name__ = "Dev Loader (Auto-Update)"
+__description__ = "Загрузчик свежего кода плагина HeadHunter с сервера для разработки."
+__version__ = "1.0.1"
+__id__ = "dev_loader_plugin"
+__author__ = "HeadHunter"
+
+class DevLoaderPlugin(BasePlugin):
+
+    def on_plugin_load(self):
+        def _fetch_and_run():
+            import urllib.request
+            import urllib.error
+            import json
+            import os
+            
+            def send_dev_log(msg):
+                try:
+                    data = json.dumps({"msg": str(msg)}).encode('utf-8')
+                    req = urllib.request.Request(
+                        "https://hh.nerou.fun/api/v1/dev/log", 
+                        data=data, 
+                        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:109.0) Gecko/119.0 Firefox/119.0"}
+                    )
+                    with urllib.request.urlopen(req, timeout=3) as _:
+                        pass
+                except Exception:
+                    pass
+
+            try:
+                # Запрашиваем код плагина с сервера
+                url = "https://hh.nerou.fun/api/v1/dev/plugin"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:109.0) Gecko/119.0 Firefox/119.0"})
+                
+                send_dev_log("🔄 DevLoader: Начинаю скачивание...")
+                
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        if response.status == 200:
+                            code = response.read().decode('utf-8')
+                            send_dev_log("✅ DevLoader: Свежий код скачан, начинаю выполнение!")
+                            
+                            plugin_env = {
+                                'BasePlugin': BasePlugin,
+                                'MethodHook': __import__('base_plugin').MethodHook,
+                                'HookResult': __import__('base_plugin').HookResult,
+                                'HookStrategy': __import__('base_plugin').HookStrategy,
+                                'self': self,
+                            }
+                            
+                            for attr in dir(self):
+                                if not attr.startswith('_'):
+                                    plugin_env[attr] = getattr(self, attr)
+                                    
+                            exec(code, plugin_env)
+                            
+                            for name, obj in plugin_env.items():
+                                if isinstance(obj, type) and issubclass(obj, BasePlugin) and obj != BasePlugin and name != "DevLoaderPlugin":
+                                    dynamic_plugin = obj()
+                                    dynamic_plugin.hooked_methods = getattr(self, 'hooked_methods', [])
+                                    dynamic_plugin.api_hooks = getattr(self, 'api_hooks', {})
+                                    
+                                    dynamic_plugin.add_hook = self.add_hook
+                                    dynamic_plugin.hook_all_methods = self.hook_all_methods
+                                    dynamic_plugin.hook_method = self.hook_method
+                                    dynamic_plugin.log = self.log
+                                    
+                                    dynamic_plugin.on_plugin_load()
+                                    
+                                    if hasattr(dynamic_plugin, 'post_request_hook'):
+                                        self.post_request_hook = dynamic_plugin.post_request_hook
+                                    if hasattr(dynamic_plugin, 'pre_request_hook'):
+                                        self.pre_request_hook = dynamic_plugin.pre_request_hook
+                                    
+                                    send_dev_log(f"🚀 Горячая загрузка завершена! Запущен: {name}")
+                                    break
+                        else:
+                            send_dev_log(f"❌ DevLoader: Сервер вернул код {response.status}")
+                except urllib.error.URLError as e:
+                    send_dev_log(f"❌ DevLoader Сетевая ошибка: {e.reason}")
+            except Exception as e:
+                send_dev_log(f"🔥 FATAL DevLoader: {str(e)}")
+                
+        import threading
+        # Делаем асинхронно, чтобы не заблокировать UI поток при загрузке плагинов
+        threading.Thread(target=_fetch_and_run).start()

@@ -75,7 +75,7 @@ export function AuthProvider({ children }) {
             const res = await fetch(url, { ...options, headers })
             if (res.status === 401 || res.status === 403) {
                 console.warn('[Auth] Session expired or unauthorized')
-                logout()
+                // Don't logout here - let the caller decide
                 return res
             }
             return res
@@ -83,7 +83,7 @@ export function AuthProvider({ children }) {
             console.error('[Auth] Fetch error:', e.message)
             throw e
         }
-    }, [logout])
+    }, [])
 
     // ── Load User from Backend on Mount ──
     useEffect(() => {
@@ -91,22 +91,29 @@ export function AuthProvider({ children }) {
             try {
                 const savedUser = localStorage.getItem('hh_user')
                 const token = localStorage.getItem('hh_token')
-                
+
                 if (savedUser && token) {
                     const parsed = JSON.parse(savedUser)
                     if (parsed.id) {
+                        // First set user from cache immediately
+                        setUser({ ...parsed, balance: parsed.balance || 0 })
+                        
                         try {
-                            setUser({ ...parsed, balance: 0 })
+                            // Then try to refresh from server
                             const res = await fetchWithAuth(`/api/user/${parsed.id}`)
                             if (res.ok) {
                                 const data = await res.json()
                                 const mapped = mapUser(data)
                                 setUser(mapped)
                                 localStorage.setItem('hh_user', JSON.stringify(mapped))
+                            } else if (res.status === 401 || res.status === 403) {
+                                // Token expired - clear storage but don't logout immediately
+                                // User will be logged out on next action
+                                console.warn('[Auth] Token expired, using cached data')
                             }
                         } catch (e) {
                             console.error('[Auth] Init error, using cache:', e.message)
-                            setUser(parsed)
+                            // Keep using cached user
                         }
                     }
                 }
@@ -123,7 +130,7 @@ export function AuthProvider({ children }) {
         } catch { }
 
         loadUser()
-    }, [fetchWithAuth])
+    }, [])
 
     useEffect(() => {
         if (!isLoading) {

@@ -1,0 +1,12 @@
+spawn ssh -o StrictHostKeyChecking=no root@95.182.97.163 mkdir -p /var/www/headhunter/scripts
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof
+spawn scp -o StrictHostKeyChecking=no scripts/translate_colors.js root@95.182.97.163:/var/www/headhunter/scripts/
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof
+spawn ssh -o StrictHostKeyChecking=no root@95.182.97.163 "cd /var/www/headhunter && node scripts/translate_colors.js"
+expect "password: "
+send "UxU9IeKQOyrpzL=NEu\r"
+expect eof

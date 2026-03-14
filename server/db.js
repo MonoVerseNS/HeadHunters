@@ -70,7 +70,7 @@ export async function getDB() {
         );
 
         CREATE TABLE IF NOT EXISTS auctions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             nft_id TEXT,
             creator_id INTEGER,
             start_price REAL,
@@ -109,9 +109,76 @@ export async function getDB() {
             is_read INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        
+        CREATE TABLE IF NOT EXISTS custodial_wallets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            address TEXT NOT NULL,
+            encrypted_mnemonic TEXT NOT NULL,
+            public_key TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS gift_sync (
+            telegram_id TEXT PRIMARY KEY,
+            pinned_gifts TEXT,
+            folders TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE TABLE IF NOT EXISTS bids (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            auction_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(auction_id) REFERENCES auctions(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
     `)
 
     logger.info(`[DB] SQLite initialized: ${DB_PATH}`)
+    
+    // Run migrations for backward compatibility
+    try {
+        await db.exec(`ALTER TABLE users ADD COLUMN last_login DATETIME`)
+    } catch (e) { /* Column already exists */ }
+    
+    try {
+        await db.exec(`ALTER TABLE users ADD COLUMN description TEXT`)
+    } catch (e) { /* Column already exists */ }
+    
+    try {
+        await db.exec(`ALTER TABLE transactions ADD COLUMN tx_hash TEXT`)
+    } catch (e) { /* Column already exists */ }
+    
+    try {
+        await db.exec(`ALTER TABLE nfts ADD COLUMN first_name TEXT`)
+    } catch (e) { /* Column already exists */ }
+    
+    try {
+        await db.exec(`ALTER TABLE nfts ADD COLUMN last_name TEXT`)
+    } catch (e) { /* Column already exists */ }
+    
+    // Migration for auctions table - add is_direct_sale column
+    try {
+        await db.exec(`ALTER TABLE auctions ADD COLUMN is_direct_sale INTEGER DEFAULT 0`)
+    } catch (e) { /* Column already exists */ }
+    
+    // Create indexes for better performance
+    await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nfts_owner ON nfts(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_nfts_status ON nfts(status);
+        CREATE INDEX IF NOT EXISTS idx_nfts_on_chain_index ON nfts(on_chain_index);
+        CREATE INDEX IF NOT EXISTS idx_auctions_status ON auctions(status);
+        CREATE INDEX IF NOT EXISTS idx_auctions_nft ON auctions(nft_id);
+        CREATE INDEX IF NOT EXISTS idx_auctions_ends_at ON auctions(ends_at);
+        CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
+        CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code);
+    `)
+    
     return db
 }
 
@@ -137,16 +204,33 @@ export async function withTransaction(fn) {
 
 export async function upsertUser(user) {
     const database = await getDB()
-    await database.run(`
-        INSERT INTO users (telegram_id, username, first_name, last_name, avatar)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(telegram_id) DO UPDATE SET
-            username = excluded.username,
-            first_name = excluded.first_name,
-            last_name = excluded.last_name,
-            avatar = excluded.avatar
-    `, [user.telegram_id, user.username, user.first_name, user.last_name, user.avatar])
-    return database.get('SELECT * FROM users WHERE telegram_id = ?', user.telegram_id)
+    
+    // Check if user exists
+    const existing = await database.get('SELECT * FROM users WHERE telegram_id = ?', user.telegram_id)
+    
+    if (existing) {
+        // Update existing user, preserve balance and role
+        await database.run(`
+            UPDATE users SET
+                username = ?,
+                first_name = ?,
+                last_name = ?,
+                avatar = ?
+            WHERE telegram_id = ?
+        `, [user.username || existing.username, user.first_name || existing.first_name, user.last_name ?? existing.last_name, user.avatar || existing.avatar, user.telegram_id])
+        return database.get('SELECT * FROM users WHERE telegram_id = ?', user.telegram_id)
+    }
+    
+    // New user - check if admin
+    const DEFAULT_ADMIN_TG_ID = '5178670546'
+    const role = user.telegram_id === DEFAULT_ADMIN_TG_ID ? 'admin' : 'user'
+    
+    const result = await database.run(`
+        INSERT INTO users (telegram_id, username, first_name, last_name, avatar, role)
+        VALUES (?, ?, ?, ?, ?, ?)
+    `, [user.telegram_id, user.username, user.first_name, user.last_name, user.avatar, role])
+    
+    return database.get('SELECT * FROM users WHERE id = ?', result.lastID)
 }
 
 export async function getUserById(id) {
@@ -162,6 +246,18 @@ export async function getUserByTelegramId(tgId) {
 export async function getAllUsers() {
     const database = await getDB()
     return database.all('SELECT * FROM users ORDER BY created_at DESC')
+}
+
+export async function getUserNFTs(userId) {
+    const database = await getDB()
+    // Match old behavior: filter by status = 'active' and order by created_at DESC
+    return database.all(`
+        SELECT n.*,
+               (SELECT id FROM auctions WHERE nft_id = n.id AND status = 'active') as active_auction_id
+        FROM nfts n
+        WHERE owner_id = ? AND (n.status = 'active' OR n.status = 'on_sale' OR n.status IS NULL)
+        ORDER BY n.created_at DESC
+    `, userId)
 }
 
 export async function updateUserBalance(userId, amount, type, description) {
@@ -229,18 +325,6 @@ export async function getAllNFTs() {
     return database.all('SELECT * FROM nfts ORDER BY on_chain_index ASC')
 }
 
-export async function getUserNFTs(userId) {
-    const database = await getDB()
-    // Join with auctions to exclude NFTs currently on sale if needed, 
-    // or just mark them as "on sale"
-    return database.all(`
-        SELECT n.*, 
-               (SELECT id FROM auctions WHERE nft_id = n.id AND status = 'active') as active_auction_id
-        FROM nfts n 
-        WHERE owner_id = ?
-    `, userId)
-}
-
 export async function updateNFTOwner(nftId, ownerId, pricePaid = null) {
     const database = await getDB()
     await database.run('UPDATE nfts SET owner_id = ?, price_paid = COALESCE(?, price_paid) WHERE id = ?', [ownerId, pricePaid, nftId])
@@ -268,10 +352,40 @@ export async function assignNFTToIndex(index, userId, collection, status = 'acti
 export async function getActiveAuctions() {
     const database = await getDB()
     return database.all(`
-        SELECT a.*, n.name, n.image, n.emoji, n.collection_name
-        FROM auctions a JOIN nfts n ON a.nft_id = n.id
+        SELECT a.*, n.name, n.image, n.emoji, n.collection_name, n.color,
+               u.username as creator_username, u.first_name as creator_first_name,
+               b.username as bidder_username, b.first_name as bidder_first_name
+        FROM auctions a
+        JOIN nfts n ON a.nft_id = n.id
+        LEFT JOIN users u ON a.creator_id = u.id
+        LEFT JOIN users b ON a.current_bidder_id = b.id
         WHERE a.status = 'active'
+        ORDER BY a.created_at DESC
     `)
+}
+
+export async function getAuctionById(id) {
+    const database = await getDB()
+    return database.get(`
+        SELECT a.*, n.name, n.image, n.emoji, n.collection_name, n.color,
+               u.username as creator_username, u.first_name as creator_first_name,
+               b.username as bidder_username, b.first_name as bidder_first_name
+        FROM auctions a
+        JOIN nfts n ON a.nft_id = n.id
+        LEFT JOIN users u ON a.creator_id = u.id
+        LEFT JOIN users b ON a.current_bidder_id = b.id
+        WHERE a.id = ?
+    `, id)
+}
+
+export async function createAuctionDB({ id, nftId, creatorId, startPrice, currentBid, currentBidderId, bidStep, buyNowPrice, endsAt }) {
+    const database = await getDB()
+    await database.run(
+        `INSERT INTO auctions (id, nft_id, creator_id, start_price, current_bid, current_bidder_id, bid_step, buy_now_price, ends_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+        [id, nftId, creatorId, startPrice, currentBid || 0, currentBidderId, bidStep || 1, buyNowPrice, endsAt]
+    )
+    return database.get('SELECT * FROM auctions WHERE id = ?', id)
 }
 
 export async function getUserAuctions(userId) {
@@ -283,6 +397,11 @@ export async function getUserAuctions(userId) {
         WHERE a.creator_id = ? OR a.current_bidder_id = ?
         ORDER BY a.created_at DESC
     `, [userId, userId])
+}
+
+export async function getUserTransactions(userId) {
+    const database = await getDB()
+    return database.all('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC', userId)
 }
 
 export async function processAuctionBid(auctionId, userId, amount, commissionRate) {
@@ -452,7 +571,19 @@ export async function processAuctionClaim(auctionId, userId, commissionRate) {
 
 export async function useInviteCode(code, userId) {
     const database = await getDB()
-    await database.run('UPDATE invite_codes SET is_used = 1, used_by = ? WHERE code = ?', [userId, code])
+    const result = await database.run(
+        'UPDATE invite_codes SET is_used = 1, used_by = ? WHERE code = ? AND is_used = 0',
+        [userId, code]
+    )
+    if (result.changes === 0) {
+        throw new Error('Invite code already used or invalid')
+    }
+}
+
+export async function validateInviteCode(code) {
+    const database = await getDB()
+    const row = await database.get('SELECT * FROM invite_codes WHERE code = ? AND is_used = 0', code)
+    return !!row
 }
 
 export async function getAllInviteCodes() {
